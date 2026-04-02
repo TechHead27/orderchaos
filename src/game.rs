@@ -1,12 +1,56 @@
 // This file contains the game engine itself, including representation of the game state and
 // utility functions like determining a winner.
 
-use std::ops::BitAndAssign;
-
 const BOARD_SIDE: u8 = 6;
 
 const UPPER_RANGE: (u32, u32) = ('A' as u32, 'Z' as u32);
 const LOWER_RANGE: (u32, u32) = ('a' as u32, 'z' as u32);
+
+const COL_MASK: u64 = (1 << (BOARD_SIDE + 1)) - 1;
+const ROW_MASK: u64 = construct_row_mask();
+
+const WINNING_ROW_HIGH: u64 = ROW_MASK & ((1 << BOARD_SIDE * BOARD_SIDE) - 2);
+const WINNING_ROW_LOW: u64 = ROW_MASK & (1 << (BOARD_SIDE * (BOARD_SIDE - 1)) - 1) - 1;
+
+const DIAG_MASKS: [u64; 3] = construct_diag_masks();
+const WINNING_DIAG_LOW: u64 = DIAG_MASKS[0] & !(1 << (BOARD_SIDE * BOARD_SIDE));
+const WINNING_DIAG_HIGH: u64 = DIAG_MASKS[0] & !1;
+
+const fn construct_diag_masks() -> [u64; 3] {
+    // 3 diagonals
+    let mut masks = [0; 3];
+
+    // Lower diagonal
+    let mut bit = 1;
+    let mut i = 0;
+
+    while i < BOARD_SIDE {
+        masks[0] |= bit;
+        masks[1] |= bit << 1;
+        masks[2] |= bit << BOARD_SIDE;
+        bit <<= BOARD_SIDE + 1;
+        i += 1;
+    }
+
+    masks[1] &= !(2 << (BOARD_SIDE * (BOARD_SIDE - 1)));
+    masks[2] &= !((1 << BOARD_SIDE) << (BOARD_SIDE * (BOARD_SIDE - 1)));
+
+    masks
+}
+
+const fn construct_row_mask() -> u64 {
+    let mut mask = 1;
+    let mut bit = 1;
+    let mut i = 0;
+
+    while i < BOARD_SIDE {
+        mask |= bit;
+        bit <<= BOARD_SIDE;
+        i += 1;
+    }
+
+    mask
+}
 
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
 enum Space {
@@ -154,8 +198,8 @@ impl Game {
         }
 
         match piece {
-            Space::O => self.o_board.bitand_assign(offset),
-            Space::X => self.x_board.bitand_assign(offset),
+            Space::O => self.o_board &= offset,
+            Space::X => self.x_board &= offset,
         };
 
         self.set_finished();
@@ -175,8 +219,63 @@ impl Game {
     /// when either condition is met.
     fn set_finished(&mut self) {
         // Check win for order
-        // Check rows
+        // Check columns
+        let mut col_mask = COL_MASK;
+        for col in 0..BOARD_SIDE {
+            let x_col_vals = (self.x_board & col_mask) >> (col * BOARD_SIDE);
+            let o_col_vals = (self.o_board & col_mask) >> (col * BOARD_SIDE);
+            if x_col_vals == 0b011111 || x_col_vals == 0b111110 || o_col_vals == 0b011111 || o_col_vals == 0b111110 {
+                self.finished = true;
+                return;
+            }
 
+            col_mask <<= BOARD_SIDE;
+        }
+
+        // Check rows
+        let mut row_mask = ROW_MASK;
+        for row in 0..BOARD_SIDE {
+            let x_row_vals = (self.x_board & row_mask) << (row * BOARD_SIDE);
+            let o_row_vals = (self.o_board & row_mask) << (row * BOARD_SIDE);
+            if x_row_vals == WINNING_ROW_HIGH || x_row_vals == WINNING_ROW_LOW || o_row_vals == WINNING_ROW_HIGH || o_row_vals == WINNING_ROW_LOW {
+                self.finished = true;
+                return;
+            }
+
+            row_mask <<= 1;
+        }
+
+        // Check diagonals
+        // 4 possible winning states (for each piece)
+
+        // Lower diagonal
+        if (self.x_board & DIAG_MASKS[1]).count_ones() == 5 || (self.o_board & DIAG_MASKS[1]).count_ones() == 5 {
+            self.finished = true;
+            return;
+        }
+
+        // Upper diagonal
+        if (self.x_board & DIAG_MASKS[2]).count_ones() == 5 || (self.o_board & DIAG_MASKS[2]).count_ones() == 5 {
+            self.finished = true;
+            return;
+        }
+
+        // Middle diagonal (both ways)
+        if self.x_board & DIAG_MASKS[0] == WINNING_DIAG_HIGH || self.o_board & DIAG_MASKS[0] == WINNING_DIAG_HIGH {
+            self.finished = true;
+            return;
+        }
+
+        if self.x_board & DIAG_MASKS[0] == WINNING_DIAG_LOW || self.o_board & DIAG_MASKS[0] == WINNING_DIAG_LOW {
+            self.finished = true;
+            return;
+        }
+
+        // Check win for chaos
+        if self.x_board.count_ones() + self.o_board.count_ones() == (BOARD_SIDE * BOARD_SIDE) as u32 {
+            self.finished = true;
+            return;
+        }
     }
 }
 
@@ -224,5 +323,10 @@ mod test {
         assert!(parse_move_string("a7x".to_string()).is_err());
         // Row out of range at 0
         assert!(parse_move_string("a0x".to_string()).is_err());
+    }
+
+    #[test]
+    fn test_construct_row_mask() {
+        assert_eq!(construct_row_mask(), 0b000001000001000001000001000001000001);
     }
 }
