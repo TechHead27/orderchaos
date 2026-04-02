@@ -1,7 +1,9 @@
 // This file contains the game engine itself, including representation of the game state and
 // utility functions like determining a winner.
 
-const BOARD_SIDE: usize = 6;
+use std::ops::BitAndAssign;
+
+const BOARD_SIDE: u8 = 6;
 
 const UPPER_RANGE: (u32, u32) = ('A' as u32, 'Z' as u32);
 const LOWER_RANGE: (u32, u32) = ('a' as u32, 'z' as u32);
@@ -39,7 +41,8 @@ impl TryFrom<char> for Space {
 
 #[derive(Debug, PartialEq, Eq)]
 struct Game {
-    board: [Option<Space>; BOARD_SIDE * BOARD_SIDE],
+    x_board: u64,
+    o_board: u64,
     order_turn: bool,
     finished: bool,
 }
@@ -58,7 +61,7 @@ struct Game {
 /// # Returns
 ///
 /// `Ok((piece, col, row))` where `piece` is the [`Space`] to place, `col` is the 0-based
-/// column index, and `row` is the 1-based row number.
+/// column index, and `row` is the 0-based row number.
 ///
 /// # Errors
 ///
@@ -67,7 +70,7 @@ struct Game {
 /// * The column character is not a letter (`'a'`–`'z'` or `'A'`–`'Z'`).
 /// * The row value exceeds [`BOARD_SIDE`].
 /// * The piece character is not `'x'`, `'X'`, `'o'`, or `'O'`.
-fn parse_move_string(move_string: String) -> Result<(Space, u32, u32), &'static str> {
+fn parse_move_string(move_string: String) -> Result<(Space, u8, u8), &'static str> {
     let mut chars = move_string.chars();
 
     let col = chars.next().ok_or("Invalid length")? as u32;
@@ -75,7 +78,7 @@ fn parse_move_string(move_string: String) -> Result<(Space, u32, u32), &'static 
         c.to_digit(10)
             .and_then(|x| x.checked_sub(1))
             .ok_or("Invalid row value")
-    })?;
+    })? as u8;
     let piece = chars
         .next()
         .ok_or("Invalid length")
@@ -90,15 +93,15 @@ fn parse_move_string(move_string: String) -> Result<(Space, u32, u32), &'static 
         return Err("Invalid column value");
     }
 
-    let col_val: u32 = if col < LOWER_RANGE.0 {
+    let col_val: u8 = if col < LOWER_RANGE.0 {
         // uppercase
-        col - UPPER_RANGE.0
+        (col - UPPER_RANGE.0) as u8
     } else {
         // lowercase
-        col - LOWER_RANGE.0
+        (col - LOWER_RANGE.0) as u8
     };
 
-    if row >= BOARD_SIDE as u32 {
+    if row >= BOARD_SIDE {
         return Err("Invalid row value");
     }
 
@@ -113,7 +116,8 @@ impl Game {
     /// A [`Game`] with all squares empty, `order_turn` set to `true`, and `finished` set to `false`.
     pub fn new() -> Self {
         Game {
-            board: [None; BOARD_SIDE * BOARD_SIDE],
+            x_board: 0,
+            o_board: 0,
             order_turn: true,
             finished: false,
         }
@@ -135,18 +139,24 @@ impl Game {
     ///
     /// # Errors
     ///
-    /// Returns a `&str` error if the move string is invalid or the target square is already occupied.
+    /// Returns a `&str` error if the move string is invalid, the target square is already occupied, 
+    /// or the game is already over.
     pub fn process_move(&mut self, move_string: String) -> Result<bool, &str> {
-        // move_string should be in the format "<row> <column> <piece>"
+        if self.finished {
+            return Err("Game is already finished");
+        }
 
         let (piece, col, row) = parse_move_string(move_string)?;
-        let offset: usize = (col * BOARD_SIDE as u32 + row) as usize;
+        let offset: u64 = 1 << (col * BOARD_SIDE + row);
 
-        if self.board[offset].is_some() {
+        if self.x_board & offset > 0 || self.o_board & offset > 0 {
             return Err("Space is not free");
         }
 
-        self.board[offset] = Some(piece);
+        match piece {
+            Space::O => self.o_board.bitand_assign(offset),
+            Space::X => self.x_board.bitand_assign(offset),
+        };
 
         self.set_finished();
 
@@ -163,7 +173,11 @@ impl Game {
     /// (horizontally, vertically, or diagonally) or when every square is occupied
     /// without such a sequence (a win for Chaos). Sets `self.finished = true`
     /// when either condition is met.
-    fn set_finished(&mut self) {}
+    fn set_finished(&mut self) {
+        // Check win for order
+        // Check rows
+
+    }
 }
 
 #[cfg(test)]
@@ -175,22 +189,22 @@ mod test {
         // Lowercase column, X piece
         assert_eq!(
             parse_move_string("a1x".to_string()),
-            Ok((Space::X, 0, 0 as u32))
+            Ok((Space::X, 0, 0))
         );
         // Lowercase column, O piece
         assert_eq!(
             parse_move_string("b3o".to_string()),
-            Ok((Space::O, 1, 2 as u32))
+            Ok((Space::O, 1, 2))
         );
         // Uppercase column, uppercase piece
         assert_eq!(
             parse_move_string("A1X".to_string()),
-            Ok((Space::X, 0, 0 as u32))
+            Ok((Space::X, 0, 0))
         );
         // Last valid column for a 6x6 board (f = index 5)
         assert_eq!(
             parse_move_string("f6o".to_string()),
-            Ok((Space::O, 5, 5 as u32))
+            Ok((Space::O, 5, 5))
         );
     }
 
