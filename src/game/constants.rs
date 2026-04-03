@@ -47,20 +47,20 @@ pub const WINNING_ROW_HIGH: u64 = ROW_MASK & ((1 << (BOARD_SIDE * BOARD_SIDE)) -
 pub const WINNING_ROW_LOW: u64 = ROW_MASK & ((1 << ((BOARD_SIDE * (BOARD_SIDE - 1)) - 1)) - 1);
 
 // The main diagonal (a1→f6): bits 0, 7, 14, 21, 28, 35.  Step = BOARD_SIDE + 1.
-pub const MAIN_DIAG_MASK: u64 = construct_diag_masks()[0];
+pub const MAIN_LR_DIAG_MASK: u64 = construct_diag_masks()[0];
 // Off-diagonal shifted one row down (a2→e6): bits 1, 8, 15, 22, 29.
 // Note: construct_diag_masks leaves a stray bit 36 in this mask (the loop overshoots by
 // one cell). Bit 36 is beyond the 6×6 board, so it is never set in x_board or o_board;
 // the count_ones() == 5 check in set_finished remains correct despite the extra bit.
-pub const LOWER_DIAG_MASK: u64 = construct_diag_masks()[1];
+pub const LOWER_LR_DIAG_MASK: u64 = construct_diag_masks()[1];
 // Off-diagonal shifted one column right (b1→f5): bits 6, 13, 20, 27, 34.
-pub const UPPER_DIAG_MASK: u64 = construct_diag_masks()[2];
+pub const UPPER_LR_DIAG_MASK: u64 = construct_diag_masks()[2];
 
 // The two winning subsets of the main diagonal (5 of its 6 cells).
 // WINNING_DIAG_LOW  = a1–e5: bits 0, 7, 14, 21, 28  (clears f6 = bit 35).
 // WINNING_DIAG_HIGH = b2–f6: bits 7, 14, 21, 28, 35  (clears a1 = bit 0).
-pub const WINNING_DIAG_LOW: u64 = MAIN_DIAG_MASK & !(1 << ((BOARD_SIDE * BOARD_SIDE) - 1));
-pub const WINNING_DIAG_HIGH: u64 = MAIN_DIAG_MASK & !1;
+pub const WINNING_LR_DIAG_LOW: u64 = MAIN_LR_DIAG_MASK & !(1 << ((BOARD_SIDE * BOARD_SIDE) - 1));
+pub const WINNING_LR_DIAG_HIGH: u64 = MAIN_LR_DIAG_MASK & !1;
 
 // Compile-time sanity checks — verify every mask against an explicit bit enumeration.
 const _: () = assert!(COL_MASK == 0b111111);
@@ -71,14 +71,14 @@ const _: () =
 const _: () =
     assert!(WINNING_ROW_HIGH == ((1 << 6) | (1 << 12) | (1 << 18) | (1 << 24) | (1u64 << 30)));
 const _: () =
-    assert!(MAIN_DIAG_MASK == (1 | (1 << 7) | (1 << 14) | (1 << 21) | (1 << 28) | (1u64 << 35)));
-const _: () = assert!(WINNING_DIAG_LOW == (1 | (1 << 7) | (1 << 14) | (1 << 21) | (1u64 << 28)));
+    assert!(MAIN_LR_DIAG_MASK == (1 | (1 << 7) | (1 << 14) | (1 << 21) | (1 << 28) | (1u64 << 35)));
+const _: () = assert!(WINNING_LR_DIAG_LOW == (1 | (1 << 7) | (1 << 14) | (1 << 21) | (1u64 << 28)));
 const _: () =
-    assert!(WINNING_DIAG_HIGH == ((1 << 7) | (1 << 14) | (1 << 21) | (1 << 28) | (1u64 << 35)));
+    assert!(WINNING_LR_DIAG_HIGH == ((1 << 7) | (1 << 14) | (1 << 21) | (1 << 28) | (1u64 << 35)));
 const _: () =
-    assert!(LOWER_DIAG_MASK == ((1 << 1) | (1 << 8) | (1 << 15) | (1 << 22) | (1u64 << 29)));
+    assert!(LOWER_LR_DIAG_MASK == ((1 << 1) | (1 << 8) | (1 << 15) | (1 << 22) | (1u64 << 29)));
 const _: () =
-    assert!(UPPER_DIAG_MASK == ((1 << 6) | (1 << 13) | (1 << 20) | (1 << 27) | (1u64 << 34)));
+    assert!(UPPER_LR_DIAG_MASK == ((1 << 6) | (1 << 13) | (1 << 20) | (1 << 27) | (1u64 << 34)));
 
 const fn construct_diag_masks() -> [u64; 3] {
     // 3 diagonals

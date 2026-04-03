@@ -5,6 +5,29 @@ mod constants;
 
 use constants::*;
 
+/// Flips the board horizontally (column a ↔ f, b ↔ e, c ↔ d).
+///
+/// Because the board is stored column-major, mirroring columns converts every
+/// right-to-left diagonal into a left-to-right diagonal, allowing RL diagonal
+/// win detection to reuse the LR diagonal logic.
+fn mirror_board(board: u64) -> u64 {
+    let s = BOARD_SIDE as u64;
+    (board & COL_MASK) << (s * 5)
+        | ((board >> s) & COL_MASK) << (s * 4)
+        | ((board >> (s * 2)) & COL_MASK) << (s * 3)
+        | ((board >> (s * 3)) & COL_MASK) << (s * 2)
+        | ((board >> (s * 4)) & COL_MASK) << s
+        | ((board >> (s * 5)) & COL_MASK)
+}
+
+/// Returns `true` if `board` contains a winning left-to-right diagonal sequence.
+fn has_lr_diagonal_win(board: u64) -> bool {
+    (board & LOWER_LR_DIAG_MASK).count_ones() == 5
+        || (board & UPPER_LR_DIAG_MASK).count_ones() == 5
+        || board & MAIN_LR_DIAG_MASK == WINNING_LR_DIAG_HIGH
+        || board & MAIN_LR_DIAG_MASK == WINNING_LR_DIAG_LOW
+}
+
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
 enum Space {
     X,
@@ -206,35 +229,15 @@ impl Game {
             row_mask <<= 1;
         }
 
-        // Check diagonals
-        // 4 possible winning states (for each piece)
-
-        // Lower diagonal
-        if (self.x_board & LOWER_DIAG_MASK).count_ones() == 5
-            || (self.o_board & LOWER_DIAG_MASK).count_ones() == 5
-        {
-            self.finished = true;
-            return;
-        }
-
-        // Upper diagonal
-        if (self.x_board & UPPER_DIAG_MASK).count_ones() == 5
-            || (self.o_board & UPPER_DIAG_MASK).count_ones() == 5
-        {
-            self.finished = true;
-            return;
-        }
-
-        // Middle diagonal (both ways)
-        if self.x_board & MAIN_DIAG_MASK == WINNING_DIAG_HIGH
-            || self.o_board & MAIN_DIAG_MASK == WINNING_DIAG_HIGH
-        {
-            self.finished = true;
-            return;
-        }
-
-        if self.x_board & MAIN_DIAG_MASK == WINNING_DIAG_LOW
-            || self.o_board & MAIN_DIAG_MASK == WINNING_DIAG_LOW
+        // Check diagonals (LR and RL).
+        // Mirroring the board horizontally converts RL diagonals into LR diagonals,
+        // so has_lr_diagonal_win can be reused for both directions.
+        let x_mirror = mirror_board(self.x_board);
+        let o_mirror = mirror_board(self.o_board);
+        if has_lr_diagonal_win(self.x_board)
+            || has_lr_diagonal_win(self.o_board)
+            || has_lr_diagonal_win(x_mirror)
+            || has_lr_diagonal_win(o_mirror)
         {
             self.finished = true;
             return;
@@ -524,6 +527,99 @@ mod test {
         let mut game = Game {
             x_board: 0,
             o_board: (1_u64 << 6) | (1_u64 << 13) | (1_u64 << 20) | (1_u64 << 27) | (1_u64 << 34),
+            order_turn: true,
+            finished: false,
+        };
+        game.set_finished();
+        assert!(game.finished);
+    }
+
+    // ---- mirror_board ----
+
+    #[test]
+    fn test_mirror_board_col_a_to_f() {
+        // Column a (bits 0–5) should map to column f (bits 30–35).
+        assert_eq!(mirror_board(0b111111), 0b111111_u64 << 30);
+    }
+
+    #[test]
+    fn test_mirror_board_col_f_to_a() {
+        assert_eq!(mirror_board(0b111111_u64 << 30), 0b111111);
+    }
+
+    #[test]
+    fn test_mirror_board_roundtrip() {
+        // Mirroring twice should return the original board.
+        let board: u64 = (1 << 7) | (1 << 14) | (1u64 << 28);
+        assert_eq!(mirror_board(mirror_board(board)), board);
+    }
+
+    // ---- has_lr_diagonal_win ----
+
+    #[test]
+    fn test_has_lr_diagonal_win_main_low() {
+        let board = (1_u64 << 0) | (1_u64 << 7) | (1_u64 << 14) | (1_u64 << 21) | (1_u64 << 28);
+        assert!(has_lr_diagonal_win(board));
+    }
+
+    #[test]
+    fn test_has_lr_diagonal_win_lower_off() {
+        let board = (1_u64 << 1) | (1_u64 << 8) | (1_u64 << 15) | (1_u64 << 22) | (1_u64 << 29);
+        assert!(has_lr_diagonal_win(board));
+    }
+
+    #[test]
+    fn test_has_lr_diagonal_win_false() {
+        assert!(!has_lr_diagonal_win(0b111111)); // full column, not a diagonal
+    }
+
+    // ---- set_finished: RL diagonal wins ----
+
+    #[test]
+    fn test_set_finished_rl_diagonal_main_low() {
+        // X fills f1→b5 (the low half of the anti-diagonal): bits 30, 25, 20, 15, 10.
+        let mut game = Game {
+            x_board: (1_u64 << 30) | (1_u64 << 25) | (1_u64 << 20) | (1_u64 << 15) | (1_u64 << 10),
+            o_board: 0,
+            order_turn: true,
+            finished: false,
+        };
+        game.set_finished();
+        assert!(game.finished);
+    }
+
+    #[test]
+    fn test_set_finished_rl_diagonal_main_high() {
+        // O fills e2→a6 (the high half of the anti-diagonal): bits 25, 20, 15, 10, 5.
+        let mut game = Game {
+            x_board: 0,
+            o_board: (1_u64 << 25) | (1_u64 << 20) | (1_u64 << 15) | (1_u64 << 10) | (1_u64 << 5),
+            order_turn: true,
+            finished: false,
+        };
+        game.set_finished();
+        assert!(game.finished);
+    }
+
+    #[test]
+    fn test_set_finished_rl_diagonal_upper_off() {
+        // X fills e1→a5 (upper RL off-diagonal): bits 24, 19, 14, 9, 4.
+        let mut game = Game {
+            x_board: (1_u64 << 24) | (1_u64 << 19) | (1_u64 << 14) | (1_u64 << 9) | (1_u64 << 4),
+            o_board: 0,
+            order_turn: true,
+            finished: false,
+        };
+        game.set_finished();
+        assert!(game.finished);
+    }
+
+    #[test]
+    fn test_set_finished_rl_diagonal_lower_off() {
+        // O fills f2→b6 (lower RL off-diagonal): bits 31, 26, 21, 16, 11.
+        let mut game = Game {
+            x_board: 0,
+            o_board: (1_u64 << 31) | (1_u64 << 26) | (1_u64 << 21) | (1_u64 << 16) | (1_u64 << 11),
             order_turn: true,
             finished: false,
         };
