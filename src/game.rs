@@ -43,12 +43,11 @@ const WINNING_COL_HIGH: u64 = 0b111110;
 // Derivation of WINNING_ROW_HIGH:
 //   ROW_MASK & ((1 << 36) - 2)  →  clears bit 0 of ROW_MASK, keeping bits 6–30.
 //
-// Derivation of WINNING_ROW_LOW (operator precedence note):
-//   `-` binds tighter than `<<` in Rust, so:
+// Derivation of WINNING_ROW_LOW:
 //   `1 << (BOARD_SIDE * (BOARD_SIDE - 1)) - 1`  =  `1 << (30 - 1)`  =  `1 << 29`
 //   Then `ROW_MASK & (1<<29) - 1`  =  `ROW_MASK & 0x1FFFFFFF`  (clears bit 30).
-const WINNING_ROW_HIGH: u64 = ROW_MASK & ((1 << BOARD_SIDE * BOARD_SIDE) - 2);
-const WINNING_ROW_LOW: u64 = ROW_MASK & (1 << (BOARD_SIDE * (BOARD_SIDE - 1)) - 1) - 1;
+const WINNING_ROW_HIGH: u64 = ROW_MASK & ((1 << (BOARD_SIDE * BOARD_SIDE)) - 2);
+const WINNING_ROW_LOW: u64 = ROW_MASK & ((1 << ((BOARD_SIDE * (BOARD_SIDE - 1)) - 1)) - 1);
 
 // The main diagonal (a1→f6): bits 0, 7, 14, 21, 28, 35.  Step = BOARD_SIDE + 1.
 const MAIN_DIAG_MASK: u64 = construct_diag_masks()[0];
@@ -63,10 +62,7 @@ const UPPER_DIAG_MASK: u64 = construct_diag_masks()[2];
 // The two winning subsets of the main diagonal (5 of its 6 cells).
 // WINNING_DIAG_LOW  = a1–e5: bits 0, 7, 14, 21, 28  (clears f6 = bit 35).
 // WINNING_DIAG_HIGH = b2–f6: bits 7, 14, 21, 28, 35  (clears a1 = bit 0).
-//
-// Operator precedence note for WINNING_DIAG_LOW:
-//   `1 << (BOARD_SIDE * BOARD_SIDE) - 1`  =  `1 << (36 - 1)`  =  `1 << 35`  (bit 35 = f6).
-const WINNING_DIAG_LOW: u64 = MAIN_DIAG_MASK & !(1 << (BOARD_SIDE * BOARD_SIDE) - 1);
+const WINNING_DIAG_LOW: u64 = MAIN_DIAG_MASK & !(1 << ((BOARD_SIDE * BOARD_SIDE) - 1));
 const WINNING_DIAG_HIGH: u64 = MAIN_DIAG_MASK & !1;
 
 // Compile-time sanity checks — verify every mask against an explicit bit enumeration.
@@ -362,7 +358,6 @@ impl Game {
         if self.x_board.count_ones() + self.o_board.count_ones() == (BOARD_SIDE * BOARD_SIDE) as u32
         {
             self.finished = true;
-            return;
         }
     }
 

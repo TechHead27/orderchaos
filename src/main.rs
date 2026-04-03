@@ -32,11 +32,10 @@ impl App {
     fn run(&mut self, terminal: &mut DefaultTerminal) -> io::Result<()> {
         while !self.exit {
             terminal.draw(|frame| self.draw(frame))?;
-            if let Event::Key(key) = event::read()? {
-                if key.kind == KeyEventKind::Press {
+            if let Event::Key(key) = event::read()?
+                && key.kind == KeyEventKind::Press {
                     self.handle_key(key);
                 }
-            }
         }
         Ok(())
     }
