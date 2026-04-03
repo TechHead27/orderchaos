@@ -84,7 +84,7 @@ impl TryFrom<char> for Space {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-struct Game {
+pub struct Game {
     x_board: u64,
     o_board: u64,
     order_turn: bool,
@@ -193,7 +193,7 @@ impl Game {
         let (piece, col, row) = parse_move_string(move_string)?;
         let offset: u64 = 1 << (col * BOARD_SIDE + row);
 
-        if self.x_board & offset > 0 || self.o_board & offset > 0 {
+        if (self.x_board | self.o_board) & offset > 0 {
             return Err("Space is not free");
         }
 
@@ -276,6 +276,44 @@ impl Game {
             self.finished = true;
             return;
         }
+    }
+
+    /// Returns the piece occupying the given cell, if any.
+    ///
+    /// # Arguments
+    ///
+    /// * `col` - 0-based column index (0 = 'a').
+    /// * `row` - 0-based row index (0 = row 1).
+    ///
+    /// # Returns
+    ///
+    /// `Some('X')`, `Some('O')`, or `None` for an empty square.
+    pub fn piece_at(&self, col: u8, row: u8) -> Option<char> {
+        let bit = 1u64 << (col * BOARD_SIDE + row);
+        if self.x_board & bit != 0 {
+            Some('X')
+        } else if self.o_board & bit != 0 {
+            Some('O')
+        } else {
+            None
+        }
+    }
+
+    /// Returns `true` if it is currently Order's turn.
+    pub fn is_order_turn(&self) -> bool {
+        self.order_turn
+    }
+
+    /// Returns `true` if the game has ended.
+    pub fn is_finished(&self) -> bool {
+        self.finished
+    }
+
+    /// Returns `true` if every square is occupied.
+    ///
+    /// When the game is finished and the board is full, Chaos has won.
+    pub fn is_board_full(&self) -> bool {
+        (self.x_board | self.o_board).count_ones() == (BOARD_SIDE as u32 * BOARD_SIDE as u32)
     }
 }
 
