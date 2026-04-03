@@ -3,18 +3,89 @@
 
 const BOARD_SIDE: u8 = 6;
 
-const UPPER_RANGE: (u32, u32) = ('A' as u32, 'Z' as u32);
-const LOWER_RANGE: (u32, u32) = ('a' as u32, 'z' as u32);
+// Columns 'a'–'f' are accepted as move input; any other letter is rejected.
+const UPPER_RANGE: (u32, u32) = ('A' as u32, 'F' as u32);
+const LOWER_RANGE: (u32, u32) = ('a' as u32, 'f' as u32);
 
-const COL_MASK: u64 = (1 << (BOARD_SIDE + 1)) - 1;
+// ---- Bitboard layout ----
+// The board is stored column-major: bit index = col * BOARD_SIDE + row, both 0-based.
+// Columns a–f → col 0–5; rows 1–6 → row 0–5.
+// Example mapping: a1 = bit 0, a6 = bit 5, b1 = bit 6, f6 = bit 35.
+//
+// Visual (bit indices):
+//     col  a   b   c   d   e   f
+// row 1:   0   6  12  18  24  30
+// row 2:   1   7  13  19  25  31
+// row 3:   2   8  14  20  26  32
+// row 4:   3   9  15  21  27  33
+// row 5:   4  10  16  22  28  34
+// row 6:   5  11  17  23  29  35
+
+// Selects all 6 rows of a single column when shifted to that column's base bit.
+// = 0b111111 (bits 0–5).
+const COL_MASK: u64 = (1 << BOARD_SIDE) - 1;
+
+// Selects row 1 of every column: bits 0, 6, 12, 18, 24, 30 (a1, b1, c1, d1, e1, f1).
+// Shifting left by r yields the mask for row r+1 across all columns.
 const ROW_MASK: u64 = construct_row_mask();
 
+// The two winning column patterns (five consecutive bits within a 6-bit column).
+// WINNING_COL_LOW  = rows 1–5 (bits 0–4): five-in-a-column not touching row 6.
+// WINNING_COL_HIGH = rows 2–6 (bits 1–5): five-in-a-column not touching row 1.
+const WINNING_COL_LOW: u64 = 0b011111;
+const WINNING_COL_HIGH: u64 = 0b111110;
+
+// The two winning row patterns, expressed in row-0 coordinates (before the per-row
+// right-shift applied in set_finished).
+// WINNING_ROW_LOW  = columns a–e: bits 0, 6, 12, 18, 24.
+// WINNING_ROW_HIGH = columns b–f: bits 6, 12, 18, 24, 30.
+//
+// Derivation of WINNING_ROW_HIGH:
+//   ROW_MASK & ((1 << 36) - 2)  →  clears bit 0 of ROW_MASK, keeping bits 6–30.
+//
+// Derivation of WINNING_ROW_LOW (operator precedence note):
+//   `-` binds tighter than `<<` in Rust, so:
+//   `1 << (BOARD_SIDE * (BOARD_SIDE - 1)) - 1`  =  `1 << (30 - 1)`  =  `1 << 29`
+//   Then `ROW_MASK & (1<<29) - 1`  =  `ROW_MASK & 0x1FFFFFFF`  (clears bit 30).
 const WINNING_ROW_HIGH: u64 = ROW_MASK & ((1 << BOARD_SIDE * BOARD_SIDE) - 2);
 const WINNING_ROW_LOW: u64 = ROW_MASK & (1 << (BOARD_SIDE * (BOARD_SIDE - 1)) - 1) - 1;
 
-const DIAG_MASKS: [u64; 3] = construct_diag_masks();
-const WINNING_DIAG_LOW: u64 = DIAG_MASKS[0] & !(1 << (BOARD_SIDE * BOARD_SIDE) - 1);
-const WINNING_DIAG_HIGH: u64 = DIAG_MASKS[0] & !1;
+// The main diagonal (a1→f6): bits 0, 7, 14, 21, 28, 35.  Step = BOARD_SIDE + 1.
+const MAIN_DIAG_MASK: u64 = construct_diag_masks()[0];
+// Off-diagonal shifted one row down (a2→e6): bits 1, 8, 15, 22, 29.
+// Note: construct_diag_masks leaves a stray bit 36 in this mask (the loop overshoots by
+// one cell). Bit 36 is beyond the 6×6 board, so it is never set in x_board or o_board;
+// the count_ones() == 5 check in set_finished remains correct despite the extra bit.
+const LOWER_DIAG_MASK: u64 = construct_diag_masks()[1];
+// Off-diagonal shifted one column right (b1→f5): bits 6, 13, 20, 27, 34.
+const UPPER_DIAG_MASK: u64 = construct_diag_masks()[2];
+
+// The two winning subsets of the main diagonal (5 of its 6 cells).
+// WINNING_DIAG_LOW  = a1–e5: bits 0, 7, 14, 21, 28  (clears f6 = bit 35).
+// WINNING_DIAG_HIGH = b2–f6: bits 7, 14, 21, 28, 35  (clears a1 = bit 0).
+//
+// Operator precedence note for WINNING_DIAG_LOW:
+//   `1 << (BOARD_SIDE * BOARD_SIDE) - 1`  =  `1 << (36 - 1)`  =  `1 << 35`  (bit 35 = f6).
+const WINNING_DIAG_LOW: u64 = MAIN_DIAG_MASK & !(1 << (BOARD_SIDE * BOARD_SIDE) - 1);
+const WINNING_DIAG_HIGH: u64 = MAIN_DIAG_MASK & !1;
+
+// Compile-time sanity checks — verify every mask against an explicit bit enumeration.
+const _: () = assert!(COL_MASK == 0b111111);
+const _: () =
+    assert!(ROW_MASK == (1 | (1 << 6) | (1 << 12) | (1 << 18) | (1 << 24) | (1u64 << 30)));
+const _: () =
+    assert!(WINNING_ROW_LOW == ((1 << 0) | (1 << 6) | (1 << 12) | (1 << 18) | (1u64 << 24)));
+const _: () =
+    assert!(WINNING_ROW_HIGH == ((1 << 6) | (1 << 12) | (1 << 18) | (1 << 24) | (1u64 << 30)));
+const _: () =
+    assert!(MAIN_DIAG_MASK == (1 | (1 << 7) | (1 << 14) | (1 << 21) | (1 << 28) | (1u64 << 35)));
+const _: () = assert!(WINNING_DIAG_LOW == (1 | (1 << 7) | (1 << 14) | (1 << 21) | (1u64 << 28)));
+const _: () =
+    assert!(WINNING_DIAG_HIGH == ((1 << 7) | (1 << 14) | (1 << 21) | (1 << 28) | (1u64 << 35)));
+const _: () =
+    assert!(LOWER_DIAG_MASK == ((1 << 1) | (1 << 8) | (1 << 15) | (1 << 22) | (1u64 << 29)));
+const _: () =
+    assert!(UPPER_DIAG_MASK == ((1 << 6) | (1 << 13) | (1 << 20) | (1 << 27) | (1u64 << 34)));
 
 const fn construct_diag_masks() -> [u64; 3] {
     // 3 diagonals
@@ -32,8 +103,8 @@ const fn construct_diag_masks() -> [u64; 3] {
         i += 1;
     }
 
-    masks[1] &= !(2 << (BOARD_SIDE * (BOARD_SIDE - 1)));
-    masks[2] &= !((1 << BOARD_SIDE) << (BOARD_SIDE * (BOARD_SIDE - 1)));
+    masks[1] &= !(1u64 << (BOARD_SIDE * BOARD_SIDE));
+    masks[2] &= !(1u64 << (BOARD_SIDE * BOARD_SIDE + (BOARD_SIDE - 1)));
 
     masks
 }
@@ -114,7 +185,7 @@ pub struct Game {
 /// * The column character is not a letter (`'a'`–`'z'` or `'A'`–`'Z'`).
 /// * The row value exceeds [`BOARD_SIDE`].
 /// * The piece character is not `'x'`, `'X'`, `'o'`, or `'O'`.
-fn parse_move_string(move_string: String) -> Result<(Space, u8, u8), &'static str> {
+fn parse_move_string(move_string: &str) -> Result<(Space, u8, u8), &'static str> {
     let mut chars = move_string.chars();
 
     let col = chars.next().ok_or("Invalid length")? as u32;
@@ -183,9 +254,9 @@ impl Game {
     ///
     /// # Errors
     ///
-    /// Returns a `&str` error if the move string is invalid, the target square is already occupied, 
+    /// Returns a `&str` error if the move string is invalid, the target square is already occupied,
     /// or the game is already over.
-    pub fn process_move(&mut self, move_string: String) -> Result<bool, &str> {
+    pub fn process_move(&mut self, move_string: &str) -> Result<bool, &str> {
         if self.finished {
             return Err("Game is already finished");
         }
@@ -224,7 +295,11 @@ impl Game {
         for col in 0..BOARD_SIDE {
             let x_col_vals = (self.x_board & col_mask) >> (col * BOARD_SIDE);
             let o_col_vals = (self.o_board & col_mask) >> (col * BOARD_SIDE);
-            if x_col_vals == 0b011111 || x_col_vals == 0b111110 || o_col_vals == 0b011111 || o_col_vals == 0b111110 {
+            if x_col_vals == WINNING_COL_LOW
+                || x_col_vals == WINNING_COL_HIGH
+                || o_col_vals == WINNING_COL_LOW
+                || o_col_vals == WINNING_COL_HIGH
+            {
                 self.finished = true;
                 return;
             }
@@ -237,7 +312,11 @@ impl Game {
         for row in 0..BOARD_SIDE {
             let x_row_vals = (self.x_board & row_mask) >> row;
             let o_row_vals = (self.o_board & row_mask) >> row;
-            if x_row_vals == WINNING_ROW_HIGH || x_row_vals == WINNING_ROW_LOW || o_row_vals == WINNING_ROW_HIGH || o_row_vals == WINNING_ROW_LOW {
+            if x_row_vals == WINNING_ROW_HIGH
+                || x_row_vals == WINNING_ROW_LOW
+                || o_row_vals == WINNING_ROW_HIGH
+                || o_row_vals == WINNING_ROW_LOW
+            {
                 self.finished = true;
                 return;
             }
@@ -249,30 +328,39 @@ impl Game {
         // 4 possible winning states (for each piece)
 
         // Lower diagonal
-        if (self.x_board & DIAG_MASKS[1]).count_ones() == 5 || (self.o_board & DIAG_MASKS[1]).count_ones() == 5 {
+        if (self.x_board & LOWER_DIAG_MASK).count_ones() == 5
+            || (self.o_board & LOWER_DIAG_MASK).count_ones() == 5
+        {
             self.finished = true;
             return;
         }
 
         // Upper diagonal
-        if (self.x_board & DIAG_MASKS[2]).count_ones() == 5 || (self.o_board & DIAG_MASKS[2]).count_ones() == 5 {
+        if (self.x_board & UPPER_DIAG_MASK).count_ones() == 5
+            || (self.o_board & UPPER_DIAG_MASK).count_ones() == 5
+        {
             self.finished = true;
             return;
         }
 
         // Middle diagonal (both ways)
-        if self.x_board & DIAG_MASKS[0] == WINNING_DIAG_HIGH || self.o_board & DIAG_MASKS[0] == WINNING_DIAG_HIGH {
+        if self.x_board & MAIN_DIAG_MASK == WINNING_DIAG_HIGH
+            || self.o_board & MAIN_DIAG_MASK == WINNING_DIAG_HIGH
+        {
             self.finished = true;
             return;
         }
 
-        if self.x_board & DIAG_MASKS[0] == WINNING_DIAG_LOW || self.o_board & DIAG_MASKS[0] == WINNING_DIAG_LOW {
+        if self.x_board & MAIN_DIAG_MASK == WINNING_DIAG_LOW
+            || self.o_board & MAIN_DIAG_MASK == WINNING_DIAG_LOW
+        {
             self.finished = true;
             return;
         }
 
         // Check win for chaos
-        if self.x_board.count_ones() + self.o_board.count_ones() == (BOARD_SIDE * BOARD_SIDE) as u32 {
+        if self.x_board.count_ones() + self.o_board.count_ones() == (BOARD_SIDE * BOARD_SIDE) as u32
+        {
             self.finished = true;
             return;
         }
@@ -324,43 +412,31 @@ mod test {
     #[test]
     fn test_parse_move_string_good() {
         // Lowercase column, X piece
-        assert_eq!(
-            parse_move_string("a1x".to_string()),
-            Ok((Space::X, 0, 0))
-        );
+        assert_eq!(parse_move_string("a1x"), Ok((Space::X, 0, 0)));
         // Lowercase column, O piece
-        assert_eq!(
-            parse_move_string("b3o".to_string()),
-            Ok((Space::O, 1, 2))
-        );
+        assert_eq!(parse_move_string("b3o"), Ok((Space::O, 1, 2)));
         // Uppercase column, uppercase piece
-        assert_eq!(
-            parse_move_string("A1X".to_string()),
-            Ok((Space::X, 0, 0))
-        );
+        assert_eq!(parse_move_string("A1X"), Ok((Space::X, 0, 0)));
         // Last valid column for a 6x6 board (f = index 5)
-        assert_eq!(
-            parse_move_string("f6o".to_string()),
-            Ok((Space::O, 5, 5))
-        );
+        assert_eq!(parse_move_string("f6o"), Ok((Space::O, 5, 5)));
     }
 
     #[test]
     fn test_parse_move_string_bad() {
         // Too short
-        assert!(parse_move_string("a1".to_string()).is_err());
+        assert!(parse_move_string("a1").is_err());
         // Too long
-        assert!(parse_move_string("a1xx".to_string()).is_err());
+        assert!(parse_move_string("a1xx").is_err());
         // Empty string
-        assert!(parse_move_string("".to_string()).is_err());
+        assert!(parse_move_string("").is_err());
         // Invalid piece character
-        assert!(parse_move_string("a1z".to_string()).is_err());
+        assert!(parse_move_string("a1z").is_err());
         // Non-letter column
-        assert!(parse_move_string("11x".to_string()).is_err());
+        assert!(parse_move_string("11x").is_err());
         // Row out of range for a 6x6 board
-        assert!(parse_move_string("a7x".to_string()).is_err());
+        assert!(parse_move_string("a7x").is_err());
         // Row out of range at 0
-        assert!(parse_move_string("a0x".to_string()).is_err());
+        assert!(parse_move_string("a0x").is_err());
     }
 
     #[test]
@@ -368,26 +444,46 @@ mod test {
         assert_eq!(construct_row_mask(), 0b000001000001000001000001000001000001);
     }
 
+    #[test]
+    fn test_construct_diag_masks() {
+        let masks = construct_diag_masks();
+        // Main diagonal: a1, b2, c3, d4, e5, f6 (bits 0, 7, 14, 21, 28, 35).
+        assert_eq!(
+            masks[0],
+            1 | (1 << 7) | (1 << 14) | (1 << 21) | (1 << 28) | (1u64 << 35)
+        );
+        // Lower off-diagonal: a2, b3, c4, d5, e6 (bits 1, 8, 15, 22, 29).
+        assert_eq!(
+            masks[1],
+            (1 << 1) | (1 << 8) | (1 << 15) | (1 << 22) | (1u64 << 29)
+        );
+        // Upper off-diagonal: b1, c2, d3, e4, f5 (bits 6, 13, 20, 27, 34).
+        assert_eq!(
+            masks[2],
+            (1 << 6) | (1 << 13) | (1 << 20) | (1 << 27) | (1u64 << 34)
+        );
+    }
+
     // ---- process_move error cases ----
 
     #[test]
     fn test_process_move_error_invalid_string() {
         let mut game = Game::new();
-        assert!(game.process_move("a1".to_string()).is_err());
+        assert!(game.process_move("a1").is_err());
     }
 
     #[test]
     fn test_process_move_error_occupied() {
         let mut game = Game::new();
-        game.process_move("a1x".to_string()).unwrap();
-        assert!(game.process_move("a1o".to_string()).is_err());
+        game.process_move("a1x").unwrap();
+        assert!(game.process_move("a1o").is_err());
     }
 
     #[test]
     fn test_process_move_error_already_finished() {
         let mut game = Game::new();
         game.finished = true;
-        assert!(game.process_move("a1x".to_string()).is_err());
+        assert!(game.process_move("a1x").is_err());
     }
 
     // ---- process_move behaviour ----
@@ -395,7 +491,7 @@ mod test {
     #[test]
     fn test_process_move_places_piece() {
         let mut game = Game::new();
-        assert_eq!(game.process_move("a1x".to_string()), Ok(false));
+        assert_eq!(game.process_move("a1x"), Ok(false));
         assert_eq!(game.piece_at(0, 0), Some('X'));
         assert!(!game.is_order_turn());
         assert!(!game.is_finished());
@@ -405,9 +501,9 @@ mod test {
     fn test_process_move_alternates_turns() {
         let mut game = Game::new();
         assert!(game.is_order_turn());
-        game.process_move("a1x".to_string()).unwrap();
+        game.process_move("a1x").unwrap();
         assert!(!game.is_order_turn());
-        game.process_move("b2o".to_string()).unwrap();
+        game.process_move("b2o").unwrap();
         assert!(game.is_order_turn());
     }
 
@@ -416,16 +512,16 @@ mod test {
         // Order builds five X's down column a (rows 1–5); Chaos plays O's in column b.
         // Board layout is column-major: col * 6 + row, so a1=bit 0, a2=bit 1, …
         let mut game = Game::new();
-        assert_eq!(game.process_move("a1x".to_string()), Ok(false));
-        assert_eq!(game.process_move("b1o".to_string()), Ok(false));
-        assert_eq!(game.process_move("a2x".to_string()), Ok(false));
-        assert_eq!(game.process_move("b2o".to_string()), Ok(false));
-        assert_eq!(game.process_move("a3x".to_string()), Ok(false));
-        assert_eq!(game.process_move("b3o".to_string()), Ok(false));
-        assert_eq!(game.process_move("a4x".to_string()), Ok(false));
-        assert_eq!(game.process_move("b4o".to_string()), Ok(false));
+        assert_eq!(game.process_move("a1x"), Ok(false));
+        assert_eq!(game.process_move("b1o"), Ok(false));
+        assert_eq!(game.process_move("a2x"), Ok(false));
+        assert_eq!(game.process_move("b2o"), Ok(false));
+        assert_eq!(game.process_move("a3x"), Ok(false));
+        assert_eq!(game.process_move("b3o"), Ok(false));
+        assert_eq!(game.process_move("a4x"), Ok(false));
+        assert_eq!(game.process_move("b4o"), Ok(false));
         // Fifth X in column a completes five-in-a-row.
-        assert_eq!(game.process_move("a5x".to_string()), Ok(true));
+        assert_eq!(game.process_move("a5x"), Ok(true));
         assert!(game.is_finished());
     }
 

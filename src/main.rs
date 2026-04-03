@@ -64,7 +64,7 @@ impl App {
 
     fn submit_move(&mut self) {
         let move_str = std::mem::take(&mut self.input);
-        if let Err(e) = self.game.process_move(move_str) {
+        if let Err(e) = self.game.process_move(&move_str) {
             self.message = Some(e.to_string());
         }
     }
@@ -81,8 +81,11 @@ impl App {
             .split(frame.area());
 
         frame.render_widget(
-            Paragraph::new(self.render_board())
-                .block(Block::default().title(" Order and Chaos ").borders(Borders::ALL)),
+            Paragraph::new(self.render_board()).block(
+                Block::default()
+                    .title(" Order and Chaos ")
+                    .borders(Borders::ALL),
+            ),
             chunks[0],
         );
 
@@ -98,8 +101,7 @@ impl App {
             "Chaos's turn"
         };
         frame.render_widget(
-            Paragraph::new(status)
-                .block(Block::default().title(" Status ").borders(Borders::ALL)),
+            Paragraph::new(status).block(Block::default().title(" Status ").borders(Borders::ALL)),
             chunks[1],
         );
 
@@ -123,8 +125,7 @@ impl App {
     }
 
     fn render_board(&self) -> Text<'static> {
-        let mut lines: Vec<Line<'static>> =
-            vec![Line::from("   a  b  c  d  e  f")];
+        let mut lines: Vec<Line<'static>> = vec![Line::from("   a  b  c  d  e  f")];
 
         for row in 0..6u8 {
             let mut spans: Vec<Span<'static>> = vec![Span::raw(format!("{}  ", row + 1))];
