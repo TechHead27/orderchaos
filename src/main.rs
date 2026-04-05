@@ -2,7 +2,7 @@ use std::io;
 
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::{
-    DefaultTerminal, Frame,
+    Frame,
     layout::{Constraint, Direction, Layout},
     style::{Color, Style},
     text::{Line, Span, Text},
@@ -13,33 +13,126 @@ mod ai;
 mod game;
 use game::Game;
 
-struct App {
-    game: Game,
-    input: String,
-    message: Option<String>,
+use crate::ai::Ai;
+
+const MAX_DEPTH: u8 = 8;
+const AI_TIME_LIMIT: u64 = 2000;
+
+enum Screen {
+    ModeSelect { cursor: usize },
+    RoleSelect { cursor: usize },
+    Playing(App),
+}
+
+struct Ui {
+    screen: Screen,
     exit: bool,
 }
 
-impl App {
+impl Ui {
     fn new() -> Self {
-        App {
-            game: Game::new(),
-            input: String::new(),
-            message: None,
+        Ui {
+            screen: Screen::ModeSelect { cursor: 0 },
             exit: false,
         }
     }
 
-    fn run(&mut self, terminal: &mut DefaultTerminal) -> io::Result<()> {
-        while !self.exit {
-            terminal.draw(|frame| self.draw(frame))?;
-            if let Event::Key(key) = event::read()?
-                && key.kind == KeyEventKind::Press
-            {
-                self.handle_key(key);
-            }
+    fn handle_key(&mut self, key: crossterm::event::KeyEvent) {
+        match &mut self.screen {
+            Screen::ModeSelect { cursor } => match key.code {
+                KeyCode::Up => *cursor = cursor.saturating_sub(1),
+                KeyCode::Down => *cursor = (*cursor + 1).min(1),
+                KeyCode::Enter => {
+                    if *cursor == 0 {
+                        self.screen = Screen::Playing(App::new(SetupOptions {
+                            has_ai: false,
+                            player_order: None,
+                        }));
+                    } else {
+                        self.screen = Screen::RoleSelect { cursor: 0 };
+                    }
+                }
+                KeyCode::Esc => self.exit = true,
+                _ => {}
+            },
+            Screen::RoleSelect { cursor } => match key.code {
+                KeyCode::Up => *cursor = cursor.saturating_sub(1),
+                KeyCode::Down => *cursor = (*cursor + 1).min(1),
+                KeyCode::Enter => {
+                    self.screen = Screen::Playing(App::new(SetupOptions {
+                        has_ai: true,
+                        player_order: Some(*cursor == 0),
+                    }));
+                }
+                KeyCode::Esc => self.screen = Screen::ModeSelect { cursor: 0 },
+                _ => {}
+            },
+            Screen::Playing(app) => app.handle_key(key),
         }
-        Ok(())
+    }
+
+    fn draw(&self, frame: &mut Frame) {
+        match &self.screen {
+            Screen::ModeSelect { cursor } => {
+                Self::draw_menu(frame, " Game Mode ", &["Two Players", "vs Ai"], *cursor)
+            }
+            Screen::RoleSelect { cursor } => {
+                Self::draw_menu(frame, " Play as ", &["Order", "Chaos"], *cursor)
+            }
+            Screen::Playing(app) => app.draw(frame),
+        }
+    }
+
+    fn draw_menu(frame: &mut Frame, title: &str, options: &[&str], cursor: usize) {
+        let items: Vec<Line> = options
+            .iter()
+            .enumerate()
+            .map(|(i, label)| {
+                if i == cursor {
+                    Line::from(Span::styled(
+                        format!("▶ {}", label),
+                        Style::default().fg(Color::Yellow),
+                    ))
+                } else {
+                    Line::from(format!("  {}", label))
+                }
+            })
+            .collect();
+
+        let area = frame.area();
+        frame.render_widget(
+            Paragraph::new(items).block(Block::default().title(title).borders(Borders::ALL)),
+            area,
+        );
+    }
+}
+
+struct App {
+    game: Game,
+    input: String,
+    message: Option<String>,
+    ai: Option<Ai>,
+    exit: bool,
+}
+
+impl App {
+    fn new(setup: SetupOptions) -> Self {
+        let game_ai = if setup.has_ai {
+            if setup.player_order.unwrap() {
+                Some(Ai::new(ai::AiRole::Chaos, MAX_DEPTH))
+            } else {
+                Some(Ai::new(ai::AiRole::Order, MAX_DEPTH))
+            }
+        } else {
+            None
+        };
+        App {
+            game: Game::new(),
+            input: String::new(),
+            message: None,
+            ai: game_ai,
+            exit: false,
+        }
     }
 
     fn handle_key(&mut self, key: crossterm::event::KeyEvent) {
@@ -67,6 +160,16 @@ impl App {
         let move_str = std::mem::take(&mut self.input);
         if let Err(e) = self.game.process_move(&move_str) {
             self.message = Some(e.to_string());
+        }
+
+        // Also get AI move if it's their turn
+        if let Some(ai) = &self.ai
+            && let Ok(mv) = ai
+                .get_move(&mut self.game, AI_TIME_LIMIT)
+                .and_then(|mv| self.game.process_move(&mv).map(|_b| mv))
+                .map_err(|e| self.message = Some(e.to_string()))
+        {
+            self.message = Some(format!("AI's move was {}", mv));
         }
     }
 
@@ -148,10 +251,25 @@ impl App {
     }
 }
 
+struct SetupOptions {
+    has_ai: bool,
+    player_order: Option<bool>,
+}
+
 fn main() -> io::Result<()> {
     let mut terminal = ratatui::init();
-    let mut app = App::new();
-    let result = app.run(&mut terminal);
+    let mut ui = Ui::new();
+    let result = (|| {
+        while !ui.exit {
+            terminal.draw(|f| ui.draw(f))?;
+            if let Event::Key(key) = event::read()?
+                && key.kind == KeyEventKind::Press
+            {
+                ui.handle_key(key);
+            }
+        }
+        Ok(())
+    })();
     ratatui::restore();
     result
 }

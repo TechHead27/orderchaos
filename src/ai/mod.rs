@@ -125,7 +125,7 @@ pub struct AiMove {
 
 impl AiMove {
     /// Convert to the string format process_move expects, e.g. "a1X"
-    pub fn to_move_string(&self) -> String {
+    pub fn to_move_string(self) -> String {
         let col = self.cell as u64 / BOARD_SIDE_U64;
         let row = self.cell as u64 % BOARD_SIDE_U64;
         let col_char = (b'a' + col as u8) as char;
