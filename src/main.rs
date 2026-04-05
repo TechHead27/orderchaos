@@ -10,6 +10,7 @@ use ratatui::{
 };
 
 mod game;
+mod ai;
 use game::Game;
 
 struct App {

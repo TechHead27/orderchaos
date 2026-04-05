@@ -1,7 +1,7 @@
 // This module contains the game engine itself, including representation of the game state and
 // utility functions like determining a winner.
 
-mod constants;
+pub mod constants;
 
 use constants::*;
 
@@ -29,7 +29,7 @@ fn has_lr_diagonal_win(board: u64) -> bool {
 }
 
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
-enum Space {
+pub enum Space {
     X,
     O,
 }
@@ -274,6 +274,14 @@ impl Game {
     /// Returns `true` if it is currently Order's turn.
     pub fn is_order_turn(&self) -> bool {
         self.order_turn
+    }
+
+    pub fn get_x_board(&self) -> u64 {
+        self.x_board
+    }
+
+    pub fn get_o_board(&self) -> u64 {
+        self.o_board
     }
 
     /// Returns `true` if the game has ended.
