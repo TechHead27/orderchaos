@@ -9,8 +9,8 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph},
 };
 
-mod game;
 mod ai;
+mod game;
 use game::Game;
 
 struct App {

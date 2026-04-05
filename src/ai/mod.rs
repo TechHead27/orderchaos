@@ -1,7 +1,7 @@
 use core::f64;
 
-use crate::game::{Game, Space};
 use crate::game::constants::BOARD_SIDE;
+use crate::game::{Game, Space};
 
 const BOARD_SIDE_U64: u64 = BOARD_SIDE as u64;
 const BOARD_SIZE: u64 = BOARD_SIDE_U64 * BOARD_SIDE_U64;
@@ -55,7 +55,9 @@ fn generate_win_masks() -> Vec<u64> {
             let mut mask: u64 = 0;
             for d in 0..5u64 {
                 let r = start_row as i64 - d as i64;
-                if r < 0 { break; }
+                if r < 0 {
+                    break;
+                }
                 mask |= 1 << ((start_col + d) * BOARD_SIDE_U64 + r as u64);
             }
             if mask.count_ones() == 5 {
@@ -79,19 +81,27 @@ fn six_mask_for(five_mask: u64) -> Option<u64> {
         .collect();
 
     let try_extend = |extra: i64| -> Option<u64> {
-        if extra < 0 || extra >= BOARD_SIZE as i64 { return None; }
+        if extra < 0 || extra >= BOARD_SIZE as i64 {
+            return None;
+        }
         let bit = 1u64 << extra;
         let six = five_mask | bit;
         // Validate it's a true straight line of 6
         // This works because if the bit is already inside the mask; the count doesn't change
-        if six.count_ones() == 6 { Some(six) } else { None }
+        if six.count_ones() == 6 {
+            Some(six)
+        } else {
+            None
+        }
     };
 
     // Compute stride from first two cells
-    if cells.len() < 2 { return None; }
+    if cells.len() < 2 {
+        return None;
+    }
     let stride = cells[1] as i64 - cells[0] as i64;
     let before = cells[0] as i64 - stride;
-    let after  = *cells.last().unwrap() as i64 + stride;
+    let after = *cells.last().unwrap() as i64 + stride;
 
     // A 6-mask exists if either extension lands on the board and is collinear
     try_extend(before).or_else(|| try_extend(after))
@@ -101,15 +111,15 @@ fn six_mask_for(five_mask: u64) -> Option<u64> {
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum AiRole {
-    Order,  // MAX player — wants 5-in-a-row
-    Chaos,  // MIN player — wants to fill board with no 5-in-a-row
+    Order, // MAX player — wants 5-in-a-row
+    Chaos, // MIN player — wants to fill board with no 5-in-a-row
 }
 
 // ─── Move ─────────────────────────────────────────────────────────────────────
 
 #[derive(Clone, Copy, Debug)]
 pub struct AiMove {
-    pub cell: u8,    // 0..35, col * 6 + row
+    pub cell: u8, // 0..35, col * 6 + row
     pub piece: Space,
 }
 
@@ -160,7 +170,11 @@ impl AiState {
             Space::X => (self.x_board | bit, self.o_board),
             Space::O => (self.x_board, self.o_board | bit),
         };
-        AiState { x_board: x, o_board: o, order_turn: !self.order_turn }
+        AiState {
+            x_board: x,
+            o_board: o,
+            order_turn: !self.order_turn,
+        }
     }
 
     fn is_full(&self) -> bool {
@@ -174,10 +188,10 @@ fn board_has_five(board: u64, masks: &[u64], six_masks: &[Option<u64>]) -> bool 
     for (mask, six_opt) in masks.iter().zip(six_masks.iter()) {
         if board & mask == *mask {
             // All 5 cells match — now check if this window is part of a 6-in-a-row
-            if let Some(six) = six_opt {
-                if board & six == *six {
-                    continue; // 6-in-a-row: doesn't count as a win
-                }
+            if let Some(six) = six_opt
+                && board & six == *six
+            {
+                continue; // 6-in-a-row: doesn't count as a win
             }
             return true;
         }
@@ -214,11 +228,7 @@ fn score_board(piece_board: u64, other_board: u64, masks: &[u64]) -> f64 {
 }
 
 // Returns evaluation of given game state. Order is always positive.
-fn evaluate(
-    state: &AiState,
-    masks: &[u64],
-    six_masks: &[Option<u64>],
-) -> f64 {
+fn evaluate(state: &AiState, masks: &[u64], six_masks: &[Option<u64>]) -> f64 {
     // Terminal: Order wins
     if order_wins(state, masks, six_masks) {
         let score = 10_000.0 - state.occupied().count_ones() as f64;
@@ -237,31 +247,33 @@ fn evaluate(
     let threat_score = x_score + o_score; // both piece types help Order
 
     // Dead windows help Chaos
-    let dead_windows = masks.iter().filter(|&&mask| {
-        state.x_board & mask != 0 && state.o_board & mask != 0
-    }).count() as f64;
+    let dead_windows = masks
+        .iter()
+        .filter(|&&mask| state.x_board & mask != 0 && state.o_board & mask != 0)
+        .count() as f64;
 
-    let raw = threat_score - dead_windows * 2.0;
-    raw
+    threat_score - dead_windows * 2.0
 }
 
 // ─── Move ordering ────────────────────────────────────────────────────────────
 
-fn order_moves(
-    state: &AiState,
-    masks: &[u64],
-    six_masks: &[Option<u64>]
-) -> Vec<AiMove> {
+fn order_moves(state: &AiState, masks: &[u64], six_masks: &[Option<u64>]) -> Vec<AiMove> {
     let mut moves: Vec<(f64, AiMove)> = state
         .empty_cells()
         .flat_map(|cell| {
-            [Space::X, Space::O].into_iter().map(move |piece| AiMove { cell, piece })
+            [Space::X, Space::O]
+                .into_iter()
+                .map(move |piece| AiMove { cell, piece })
         })
         .map(|mv| {
             let child = state.apply(mv);
             // Immediate wins get highest priority
             let priority = if order_wins(&child, masks, six_masks) {
-                if state.order_turn { 1_000_000.0 } else { -1_000_000.0 }
+                if state.order_turn {
+                    1_000_000.0
+                } else {
+                    -1_000_000.0
+                }
             } else {
                 let e = evaluate(&child, masks, six_masks);
                 if state.order_turn { e } else { -e }
@@ -297,9 +309,7 @@ fn alphabeta(
         let mut value = f64::NEG_INFINITY;
         for mv in moves {
             let child = state.apply(mv);
-            value = value.max(alphabeta(
-                &child, depth - 1, alpha, beta, masks, six_masks
-            ));
+            value = value.max(alphabeta(&child, depth - 1, alpha, beta, masks, six_masks));
             alpha = alpha.max(value);
             if alpha >= beta {
                 break; // β-cutoff
@@ -310,9 +320,7 @@ fn alphabeta(
         let mut value = f64::INFINITY;
         for mv in moves {
             let child = state.apply(mv);
-            value = value.min(alphabeta(
-                &child, depth - 1, alpha, beta, masks, six_masks
-            ));
+            value = value.min(alphabeta(&child, depth - 1, alpha, beta, masks, six_masks));
             beta = beta.min(value);
             if alpha >= beta {
                 break; // α-cutoff
@@ -335,7 +343,12 @@ impl Ai {
     pub fn new(role: AiRole, max_depth: u8) -> Self {
         let masks = generate_win_masks();
         let six_masks = masks.iter().map(|&m| six_mask_for(m)).collect();
-        Ai { role, masks, six_masks, max_depth }
+        Ai {
+            role,
+            masks,
+            six_masks,
+            max_depth,
+        }
     }
 
     /// Iterative deepening: searches deeper until time budget is exhausted.
@@ -354,7 +367,11 @@ impl Ai {
 
             // Order is MAX, Chaos is MIN
             let maximizing = self.role == AiRole::Order;
-            let mut best_score = if maximizing { f64::NEG_INFINITY } else { f64::INFINITY };
+            let mut best_score = if maximizing {
+                f64::NEG_INFINITY
+            } else {
+                f64::INFINITY
+            };
             let mut alpha = f64::NEG_INFINITY;
             let mut beta = f64::INFINITY;
             let mut current_best: Option<AiMove> = None;
@@ -364,16 +381,13 @@ impl Ai {
                     return best;
                 }
                 let child = state.apply(mv);
-                let score = alphabeta(
-                    &child,
-                    depth - 1,
-                    alpha,
-                    beta,
-                    &self.masks,
-                    &self.six_masks,
-                );
+                let score = alphabeta(&child, depth - 1, alpha, beta, &self.masks, &self.six_masks);
 
-                let better = if maximizing { score > best_score } else { score < best_score };
+                let better = if maximizing {
+                    score > best_score
+                } else {
+                    score < best_score
+                };
                 if better {
                     best_score = score;
                     current_best = Some(mv);
@@ -397,6 +411,8 @@ impl Ai {
 
     /// Returns best move as a string.
     pub fn get_move(&self, game: &mut Game, time_limit_ms: u64) -> Result<String, &str> {
-        self.best_move(game, time_limit_ms).ok_or("No moves available").map(|mv| mv.to_move_string()) 
+        self.best_move(game, time_limit_ms)
+            .ok_or("No moves available")
+            .map(|mv| mv.to_move_string())
     }
 }
