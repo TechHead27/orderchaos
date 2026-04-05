@@ -2,11 +2,11 @@ use std::io;
 
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::{
+    DefaultTerminal, Frame,
     layout::{Constraint, Direction, Layout},
     style::{Color, Style},
     text::{Line, Span, Text},
     widgets::{Block, Borders, Paragraph},
-    DefaultTerminal, Frame,
 };
 
 mod game;
@@ -33,9 +33,10 @@ impl App {
         while !self.exit {
             terminal.draw(|frame| self.draw(frame))?;
             if let Event::Key(key) = event::read()?
-                && key.kind == KeyEventKind::Press {
-                    self.handle_key(key);
-                }
+                && key.kind == KeyEventKind::Press
+            {
+                self.handle_key(key);
+            }
         }
         Ok(())
     }

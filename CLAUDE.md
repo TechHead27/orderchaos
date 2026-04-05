@@ -14,7 +14,7 @@ cargo clippy         # Lint
 
 ## Project Overview
 
-This is a Rust implementation of the board game **Order and Chaos** — a 6x6 variant of tic-tac-toe. The project is in early development (currently just a stub `main.rs`).
+This is a Rust implementation of the board game **Order and Chaos** — a 6x6 variant of tic-tac-toe. The project currently consists of a main.rs file containing the input loop and a game folder containing the game logic.
 
 **Game rules:**
 - 6x6 grid, played with X's and O's
@@ -23,13 +23,12 @@ This is a Rust implementation of the board game **Order and Chaos** — a 6x6 va
 - **Chaos** wins by filling the board without five in a row
 
 **Planned features** (per README):
-- Two-player and single-player modes
+- Single-player mode against AI
 - AI opponent using alpha-beta pruning
-- Move input format: coordinate + piece, e.g. `j2x` to place X at column j, row 2
 
 ## Architecture
 
-The game is a single binary (`orderchaos`). No external dependencies. All logic lives in `src/`.
+The game is a single binary (`orderchaos`). The external dependencies are downloaded and built by cargo. All logic lives in `src/`.
 
 ## Extra Instructions
 - There should be full unit test coverage. Whenever functions are changed or added, tests should be updated as well.
