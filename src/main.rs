@@ -1,4 +1,6 @@
 use std::io;
+use std::sync::{Arc, mpsc};
+use std::time::Duration;
 
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::{
@@ -18,110 +20,245 @@ use crate::ai::Ai;
 const MAX_DEPTH: u8 = 8;
 const AI_TIME_LIMIT: u64 = 2000;
 
+// ─── Screen ──────────────────────────────────────────────────────────────────
+
 enum Screen {
     ModeSelect { cursor: usize },
     RoleSelect { cursor: usize },
     Playing(App),
 }
 
-struct Ui {
+// ─── AppEvent ────────────────────────────────────────────────────────────────
+
+/// All external event sources. Extend this enum to add new event types
+/// (timers, network moves, etc.) without touching handle_event's callers.
+enum AppEvent {
+    Key(crossterm::event::KeyEvent),
+    AiResult(Result<String, String>),
+}
+
+// ─── Message ─────────────────────────────────────────────────────────────────
+
+#[derive(Debug, PartialEq)]
+enum Message {
+    CursorUp,
+    CursorDown,
+    /// Enter in menus; also used to submit a move while Playing
+    Confirm,
+    /// Esc — go back / quit depending on current screen
+    Back,
+    /// Ctrl-C — hard quit from any screen
+    Quit,
+    InputChar(char),
+    InputBackspace,
+    AiMoved(String),
+    AiError(String),
+}
+
+// ─── Command ──────────────────────────────────────────────────────────────────
+
+/// Side effects that update() wants the main loop to perform.
+enum Command {
+    SpawnAi { ai: Arc<Ai>, game: Game },
+}
+
+// ─── Model ───────────────────────────────────────────────────────────────────
+
+struct Model {
     screen: Screen,
     exit: bool,
 }
 
-impl Ui {
+impl Model {
     fn new() -> Self {
-        Ui {
+        Model {
             screen: Screen::ModeSelect { cursor: 0 },
             exit: false,
         }
     }
+}
 
-    fn handle_key(&mut self, key: crossterm::event::KeyEvent) {
-        match &mut self.screen {
-            Screen::ModeSelect { cursor } => match key.code {
-                KeyCode::Up => *cursor = cursor.saturating_sub(1),
-                KeyCode::Down => *cursor = (*cursor + 1).min(1),
-                KeyCode::Enter => {
-                    if *cursor == 0 {
-                        self.screen = Screen::Playing(App::new(SetupOptions {
-                            has_ai: false,
-                            player_order: None,
-                        }));
-                    } else {
-                        self.screen = Screen::RoleSelect { cursor: 0 };
-                    }
-                }
-                KeyCode::Esc => self.exit = true,
-                _ => {}
-            },
-            Screen::RoleSelect { cursor } => match key.code {
-                KeyCode::Up => *cursor = cursor.saturating_sub(1),
-                KeyCode::Down => *cursor = (*cursor + 1).min(1),
-                KeyCode::Enter => {
-                    self.screen = Screen::Playing(App::new(SetupOptions {
-                        has_ai: true,
-                        player_order: Some(*cursor == 0),
-                    }));
-                }
-                KeyCode::Esc => self.screen = Screen::ModeSelect { cursor: 0 },
-                _ => {}
-            },
-            Screen::Playing(app) => app.handle_key(key),
-        }
-    }
+// ─── handle_event (pure) ─────────────────────────────────────────────────────
 
-    fn draw(&self, frame: &mut Frame) {
-        match &self.screen {
-            Screen::ModeSelect { cursor } => {
-                Self::draw_menu(frame, " Game Mode ", &["Two Players", "vs Ai"], *cursor)
+fn handle_event(event: AppEvent) -> Option<Message> {
+    match event {
+        AppEvent::Key(key) => match key.code {
+            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                Some(Message::Quit)
             }
-            Screen::RoleSelect { cursor } => {
-                Self::draw_menu(frame, " Play as ", &["Order", "Chaos"], *cursor)
-            }
-            Screen::Playing(app) => app.draw(frame),
-        }
-    }
-
-    fn draw_menu(frame: &mut Frame, title: &str, options: &[&str], cursor: usize) {
-        let items: Vec<Line> = options
-            .iter()
-            .enumerate()
-            .map(|(i, label)| {
-                if i == cursor {
-                    Line::from(Span::styled(
-                        format!("▶ {}", label),
-                        Style::default().fg(Color::Yellow),
-                    ))
-                } else {
-                    Line::from(format!("  {}", label))
-                }
-            })
-            .collect();
-
-        let area = frame.area();
-        frame.render_widget(
-            Paragraph::new(items).block(Block::default().title(title).borders(Borders::ALL)),
-            area,
-        );
+            KeyCode::Esc => Some(Message::Back),
+            KeyCode::Up => Some(Message::CursorUp),
+            KeyCode::Down => Some(Message::CursorDown),
+            KeyCode::Enter => Some(Message::Confirm),
+            KeyCode::Backspace => Some(Message::InputBackspace),
+            KeyCode::Char(c) => Some(Message::InputChar(c)),
+            _ => None,
+        },
+        AppEvent::AiResult(Ok(mv)) => Some(Message::AiMoved(mv)),
+        AppEvent::AiResult(Err(e)) => Some(Message::AiError(e)),
     }
 }
+
+// ─── update (all state mutation) ─────────────────────────────────────────────
+
+fn update(model: &mut Model, msg: Message) -> Option<Command> {
+    if msg == Message::Quit {
+        model.exit = true;
+        return None;
+    }
+
+    match &mut model.screen {
+        Screen::ModeSelect { cursor } => match msg {
+            Message::CursorUp => *cursor = cursor.saturating_sub(1),
+            Message::CursorDown => *cursor = (*cursor + 1).min(1),
+            Message::Confirm => {
+                let selected = *cursor; // copy to end borrow before reassigning screen
+                model.screen = if selected == 0 {
+                    Screen::Playing(App::new(SetupOptions {
+                        has_ai: false,
+                        player_order: None,
+                    }))
+                } else {
+                    Screen::RoleSelect { cursor: 0 }
+                };
+            }
+            Message::Back => model.exit = true,
+            _ => {}
+        },
+        Screen::RoleSelect { cursor } => match msg {
+            Message::CursorUp => *cursor = cursor.saturating_sub(1),
+            Message::CursorDown => *cursor = (*cursor + 1).min(1),
+            Message::Confirm => {
+                let is_order = *cursor == 0;
+                let app = App::new(SetupOptions {
+                    has_ai: true,
+                    player_order: Some(is_order),
+                });
+                // If AI goes first (player chose Chaos), spawn immediately
+                let cmd = if !app.is_player_turn() {
+                    app.ai.as_ref().map(|ai| Command::SpawnAi {
+                        ai: Arc::clone(ai),
+                        game: app.game.clone(),
+                    })
+                } else {
+                    None
+                };
+                model.screen = Screen::Playing(app);
+                return cmd;
+            }
+            Message::Back => model.screen = Screen::ModeSelect { cursor: 0 },
+            _ => {}
+        },
+        Screen::Playing(app) => match msg {
+            Message::Back => {
+                model.exit = true;
+                return None;
+            }
+            _ if app.game.is_finished() => {}
+            Message::Confirm if app.is_player_turn() => {
+                if app.submit_move() 
+                    && let Some(ai) = &app.ai
+                    && !app.game.is_finished()
+                {
+                        return Some(Command::SpawnAi {
+                            ai: Arc::clone(ai),
+                            game: app.game.clone(),
+                        });
+                    
+                }
+            }
+            Message::InputChar(c) => {
+                app.input.push(c);
+                app.message = None;
+            }
+            Message::InputBackspace => {
+                app.input.pop();
+                app.message = None;
+            }
+            Message::AiMoved(mv) => {
+                if let Err(e) = app.game.process_move(&mv) {
+                    app.message = Some(e.to_string());
+                } else {
+                    app.message = Some(format!("AI's move was {}", mv));
+                }
+            }
+            Message::AiError(e) => {
+                app.message = Some(e);
+            }
+            _ => {}
+        },
+    }
+    None
+}
+
+// ─── view (pure render) ───────────────────────────────────────────────────────
+
+fn view(model: &Model, frame: &mut Frame) {
+    match &model.screen {
+        Screen::ModeSelect { cursor } => {
+            draw_menu(frame, " Game Mode ", &["Two Players", "vs Ai"], *cursor)
+        }
+        Screen::RoleSelect { cursor } => {
+            draw_menu(frame, " Play as ", &["Order", "Chaos"], *cursor)
+        }
+        Screen::Playing(app) => app.draw(frame),
+    }
+}
+
+fn draw_menu(frame: &mut Frame, title: &str, options: &[&str], cursor: usize) {
+    let items: Vec<Line> = options
+        .iter()
+        .enumerate()
+        .map(|(i, label)| {
+            if i == cursor {
+                Line::from(Span::styled(
+                    format!("▶ {}", label),
+                    Style::default().fg(Color::Yellow),
+                ))
+            } else {
+                Line::from(format!("  {}", label))
+            }
+        })
+        .collect();
+
+    let area = frame.area();
+    frame.render_widget(
+        Paragraph::new(items).block(Block::default().title(title).borders(Borders::ALL)),
+        area,
+    );
+}
+
+// ─── execute_command ──────────────────────────────────────────────────────────
+
+fn execute_command(cmd: Command, tx: &mpsc::Sender<Result<String, String>>) {
+    match cmd {
+        Command::SpawnAi { ai, game } => {
+            let tx = tx.clone();
+            std::thread::spawn(move || {
+                let mut game = game;
+                let result = ai.get_move(&mut game, AI_TIME_LIMIT).map_err(|e| e.to_string());
+                tx.send(result).unwrap();
+            });
+        }
+    }
+}
+
+// ─── App ─────────────────────────────────────────────────────────────────────
 
 struct App {
     game: Game,
     input: String,
     message: Option<String>,
-    ai: Option<Ai>,
-    exit: bool,
+    ai: Option<Arc<Ai>>,
 }
 
 impl App {
     fn new(setup: SetupOptions) -> Self {
         let game_ai = if setup.has_ai {
             if setup.player_order.unwrap() {
-                Some(Ai::new(ai::AiRole::Chaos, MAX_DEPTH))
+                Some(Arc::new(Ai::new(ai::AiRole::Chaos, MAX_DEPTH)))
             } else {
-                Some(Ai::new(ai::AiRole::Order, MAX_DEPTH))
+                Some(Arc::new(Ai::new(ai::AiRole::Order, MAX_DEPTH)))
             }
         } else {
             None
@@ -131,45 +268,24 @@ impl App {
             input: String::new(),
             message: None,
             ai: game_ai,
-            exit: false,
         }
     }
 
-    fn handle_key(&mut self, key: crossterm::event::KeyEvent) {
-        match key.code {
-            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.exit = true;
-            }
-            KeyCode::Esc => self.exit = true,
-            // Ignore further input once the game is over.
-            _ if self.game.is_finished() => {}
-            KeyCode::Enter => self.submit_move(),
-            KeyCode::Backspace => {
-                self.input.pop();
-                self.message = None;
-            }
-            KeyCode::Char(c) => {
-                self.input.push(c);
-                self.message = None;
-            }
-            _ => {}
+    fn is_player_turn(&self) -> bool {
+        match &self.ai {
+            None => true,
+            Some(ai) => self.game.is_order_turn() != ai.is_order(),
         }
     }
 
-    fn submit_move(&mut self) {
+    // Returns whether the move was successfully processed
+    fn submit_move(&mut self) -> bool {
         let move_str = std::mem::take(&mut self.input);
         if let Err(e) = self.game.process_move(&move_str) {
             self.message = Some(e.to_string());
-        }
-
-        // Also get AI move if it's their turn
-        if let Some(ai) = &self.ai
-            && let Ok(mv) = ai
-                .get_move(&mut self.game, AI_TIME_LIMIT)
-                .and_then(|mv| self.game.process_move(&mv).map(|_b| mv))
-                .map_err(|e| self.message = Some(e.to_string()))
-        {
-            self.message = Some(format!("AI's move was {}", mv));
+            false
+        } else {
+            true
         }
     }
 
@@ -219,6 +335,8 @@ impl App {
             Line::from(Span::styled(msg.clone(), Style::default().fg(Color::Red)))
         } else if self.game.is_finished() {
             Line::from("[Esc] quit")
+        } else if !self.is_player_turn() {
+            Line::from("Thinking...")
         } else {
             Line::from("Format: <col><row><piece>  e.g. a1x    [Esc] quit")
         };
@@ -251,25 +369,274 @@ impl App {
     }
 }
 
+// ─── SetupOptions ─────────────────────────────────────────────────────────────
+
 struct SetupOptions {
     has_ai: bool,
     player_order: Option<bool>,
 }
 
+// ─── main ─────────────────────────────────────────────────────────────────────
+
 fn main() -> io::Result<()> {
     let mut terminal = ratatui::init();
-    let mut ui = Ui::new();
+    let mut model = Model::new();
+    let (ai_tx, ai_rx) = mpsc::channel::<Result<String, String>>();
+
     let result = (|| {
-        while !ui.exit {
-            terminal.draw(|f| ui.draw(f))?;
-            if let Event::Key(key) = event::read()?
+        while !model.exit {
+            terminal.draw(|f| view(&model, f))?;
+
+            // Non-blocking check for an AI result
+            if let Ok(result) = ai_rx.try_recv() {
+                if let Some(msg) = handle_event(AppEvent::AiResult(result))
+                    && let Some(cmd) = update(&mut model, msg)
+                {
+                    execute_command(cmd, &ai_tx);
+                }
+                continue;
+            }
+
+            // Wait up to 16ms for a key event so AI results are picked up promptly
+            if event::poll(Duration::from_millis(16))?
+                && let Event::Key(key) = event::read()?
                 && key.kind == KeyEventKind::Press
+                && let Some(msg) = handle_event(AppEvent::Key(key))
+                && let Some(cmd) = update(&mut model, msg)
             {
-                ui.handle_key(key);
+                execute_command(cmd, &ai_tx);
             }
         }
         Ok(())
     })();
     ratatui::restore();
     result
+}
+
+// ─── Tests ────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    fn key(code: KeyCode) -> AppEvent {
+        AppEvent::Key(KeyEvent::new(code, KeyModifiers::empty()))
+    }
+
+    fn mode_select() -> Model {
+        Model::new()
+    }
+
+    fn role_select() -> Model {
+        Model {
+            screen: Screen::RoleSelect { cursor: 0 },
+            exit: false,
+        }
+    }
+
+    fn playing(has_ai: bool) -> Model {
+        Model {
+            screen: Screen::Playing(App::new(SetupOptions {
+                has_ai,
+                player_order: if has_ai { Some(true) } else { None },
+            })),
+            exit: false,
+        }
+    }
+
+    // ── handle_event ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn handle_event_esc_back() {
+        assert_eq!(handle_event(key(KeyCode::Esc)), Some(Message::Back));
+    }
+
+    #[test]
+    fn handle_event_ctrl_c_quit() {
+        let ev = AppEvent::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+        assert_eq!(handle_event(ev), Some(Message::Quit));
+    }
+
+    #[test]
+    fn handle_event_enter_confirm() {
+        assert_eq!(handle_event(key(KeyCode::Enter)), Some(Message::Confirm));
+    }
+
+    #[test]
+    fn handle_event_char() {
+        assert_eq!(
+            handle_event(key(KeyCode::Char('a'))),
+            Some(Message::InputChar('a'))
+        );
+    }
+
+    #[test]
+    fn handle_event_unknown_none() {
+        assert_eq!(handle_event(key(KeyCode::F(5))), None);
+    }
+
+    #[test]
+    fn handle_event_ai_result_ok() {
+        assert_eq!(
+            handle_event(AppEvent::AiResult(Ok("a1x".into()))),
+            Some(Message::AiMoved("a1x".into()))
+        );
+    }
+
+    #[test]
+    fn handle_event_ai_result_err() {
+        assert_eq!(
+            handle_event(AppEvent::AiResult(Err("oops".into()))),
+            Some(Message::AiError("oops".into()))
+        );
+    }
+
+    // ── update / ModeSelect ───────────────────────────────────────────────────
+
+    #[test]
+    fn mode_select_cursor_down() {
+        let mut m = mode_select();
+        update(&mut m, Message::CursorDown);
+        assert!(matches!(m.screen, Screen::ModeSelect { cursor: 1 }));
+    }
+
+    #[test]
+    fn mode_select_cursor_up_clamps() {
+        let mut m = mode_select();
+        update(&mut m, Message::CursorUp);
+        assert!(matches!(m.screen, Screen::ModeSelect { cursor: 0 }));
+    }
+
+    #[test]
+    fn mode_select_confirm_0_playing() {
+        let mut m = mode_select();
+        update(&mut m, Message::Confirm);
+        assert!(matches!(m.screen, Screen::Playing(_)));
+    }
+
+    #[test]
+    fn mode_select_confirm_1_role_select() {
+        let mut m = mode_select();
+        update(&mut m, Message::CursorDown);
+        update(&mut m, Message::Confirm);
+        assert!(matches!(m.screen, Screen::RoleSelect { cursor: 0 }));
+    }
+
+    #[test]
+    fn mode_select_back_exits() {
+        let mut m = mode_select();
+        update(&mut m, Message::Back);
+        assert!(m.exit);
+    }
+
+    // ── update / RoleSelect ───────────────────────────────────────────────────
+
+    #[test]
+    fn role_select_confirm_playing() {
+        let mut m = role_select();
+        update(&mut m, Message::Confirm);
+        assert!(matches!(m.screen, Screen::Playing(_)));
+    }
+
+    #[test]
+    fn role_select_back_mode_select() {
+        let mut m = role_select();
+        update(&mut m, Message::Back);
+        assert!(matches!(m.screen, Screen::ModeSelect { cursor: 0 }));
+    }
+
+    // ── update / Playing ──────────────────────────────────────────────────────
+
+    #[test]
+    fn playing_back_exits() {
+        let mut m = playing(false);
+        update(&mut m, Message::Back);
+        assert!(m.exit);
+    }
+
+    #[test]
+    fn playing_quit_exits() {
+        let mut m = playing(false);
+        update(&mut m, Message::Quit);
+        assert!(m.exit);
+    }
+
+    #[test]
+    fn playing_input_char_appends() {
+        let mut m = playing(false);
+        update(&mut m, Message::InputChar('a'));
+        update(&mut m, Message::InputChar('1'));
+        let Screen::Playing(ref app) = m.screen else { panic!() };
+        assert_eq!(app.input, "a1");
+    }
+
+    #[test]
+    fn playing_backspace_pops() {
+        let mut m = playing(false);
+        update(&mut m, Message::InputChar('a'));
+        update(&mut m, Message::InputChar('1'));
+        update(&mut m, Message::InputBackspace);
+        let Screen::Playing(ref app) = m.screen else { panic!() };
+        assert_eq!(app.input, "a");
+    }
+
+    #[test]
+    fn playing_confirm_valid_move_advances_game() {
+        let mut m = playing(false);
+        for c in "a1x".chars() {
+            update(&mut m, Message::InputChar(c));
+        }
+        update(&mut m, Message::Confirm);
+        let Screen::Playing(ref app) = m.screen else { panic!() };
+        assert_eq!(app.game.piece_at(0, 0), Some('X'));
+        assert_eq!(app.input, "");
+    }
+
+    #[test]
+    fn playing_confirm_invalid_move_sets_message() {
+        let mut m = playing(false);
+        for c in "zzz".chars() {
+            update(&mut m, Message::InputChar(c));
+        }
+        update(&mut m, Message::Confirm);
+        let Screen::Playing(ref app) = m.screen else { panic!() };
+        assert!(app.message.is_some());
+        assert!(app.is_player_turn());
+    }
+
+    #[test]
+    fn playing_input_ignored_after_game_over() {
+        let mut m = playing(false);
+        let Screen::Playing(ref mut app) = m.screen else { panic!() };
+        // Build an Order win: X in column a rows 1-5
+        for r in ['1', '2', '3', '4', '5'] {
+            app.game.process_move(&format!("a{}x", r)).unwrap();
+            if !app.game.is_finished() {
+                app.game.process_move(&format!("b{}o", r)).unwrap();
+            }
+        }
+        assert!(app.game.is_finished());
+        // Now InputChar should be ignored
+        update(&mut m, Message::InputChar('z'));
+        let Screen::Playing(ref app) = m.screen else { panic!() };
+        assert_eq!(app.input, "");
+    }
+
+    #[test]
+    fn playing_ai_moved_applies_move() {
+        let mut m = playing(false);
+        update(&mut m, Message::AiMoved("a1x".into()));
+        let Screen::Playing(ref app) = m.screen else { panic!() };
+        assert_eq!(app.game.piece_at(0, 0), Some('X'));
+        assert!(app.message.as_deref().unwrap_or("").contains("a1x"));
+    }
+
+    #[test]
+    fn playing_ai_error_sets_message() {
+        let mut m = playing(false);
+        update(&mut m, Message::AiError("no moves".into()));
+        let Screen::Playing(ref app) = m.screen else { panic!() };
+        assert_eq!(app.message.as_deref(), Some("no moves"));
+    }
 }

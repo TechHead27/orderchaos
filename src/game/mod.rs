@@ -59,7 +59,7 @@ impl TryFrom<char> for Space {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct Game {
     x_board: u64,
     o_board: u64,

@@ -351,6 +351,10 @@ impl Ai {
         }
     }
 
+    pub fn is_order(&self) -> bool {
+        self.role == AiRole::Order
+    }
+
     /// Iterative deepening: searches deeper until time budget is exhausted.
     /// Returns the best move found at the deepest completed iteration.
     pub fn best_move(&self, game: &Game, time_limit_ms: u64) -> Option<AiMove> {
